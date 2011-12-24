@@ -271,7 +271,7 @@ static inline int is_one(int dur)
 
 void loop(void) {
   int addr, cmd, reg;
-  int bit, value;
+  unsigned int bit, value;
   int prev_level = -1;
   unsigned long prevm = 0;
   int dur;
@@ -296,12 +296,18 @@ void loop(void) {
           prev_level = level;
           Serial.println("RESET");
           continue;
-        } else if (dur > 600) {
-            /* Attention */
-            state = SYNC;
-            prev_level = level;
-            continue;
-          }
+        } 
+        else if (dur > 700) {
+          /* Attention */
+          state = SYNC;
+          prev_level = level;
+          addr = 0;
+          reg = 0;
+          cmd = 0;
+          bit = 0;
+          value = 0;
+          continue;
+        }
       }
       switch(state) {
       case IDLE:
@@ -321,9 +327,6 @@ void loop(void) {
         if (prev_level == 0) {
           if (is_one(dur)) {
             addr = 8;
-          } 
-          else {
-            addr = 0;
           }
           state = ADDR2;
         }
@@ -356,10 +359,7 @@ void loop(void) {
         if (prev_level == 0) {
           if (is_one(dur)) {
             cmd = 2;
-          } 
-          else {
-            cmd = 0;
-          } 
+          }
           state = CMD2;
         }
         break;
@@ -375,10 +375,7 @@ void loop(void) {
         if (prev_level == 0) {
           if (is_one(dur)) {
             reg = 2;
-          } 
-          else {
-            reg = 0;
-          } 
+          }
           state = REG2;
         }
         break;
@@ -394,6 +391,10 @@ void loop(void) {
         if (prev_level == 0) {
           if (is_one(dur)) {
             state = IDLE;
+          } 
+          else if (dur > 400) {
+            Serial.println("SR");
+            state = DATA;;
           } else {
             state = START;
           }
@@ -403,9 +404,8 @@ void loop(void) {
         if (prev_level == 0) {
           if (is_one(dur)) {
             state = DATA;
-            bit = 0;
-            value = 0;
-          } else {
+          } 
+          else {
             Serial.print(addr);
             Serial.print(" ");
             Serial.print(cmd);
@@ -413,21 +413,24 @@ void loop(void) {
             Serial.println(reg);
             state = IDLE;
           }
+        } 
+        else if (dur > 260) { /* stop to start */
+          state = IDLE;
         }
         break;
       case DATA:
         if (prev_level == 0) {
           if (is_one(dur)) {
-            value |= 0x80 >> bit;
+            value |= 0x8000 >> bit;
           }
           bit++;
           if (bit == 16) {
             Serial.print(addr);
-            Serial.print(" ");
+            Serial.print(' ');
             Serial.print(cmd);
-            Serial.print(" ");
+            Serial.print(' ');
             Serial.print(reg);
-            Serial.print(" ");
+            Serial.print(' ');
             Serial.println(value, HEX);
             state = IDLE;
           }
@@ -438,4 +441,5 @@ void loop(void) {
     }
   }
 }
+
 
