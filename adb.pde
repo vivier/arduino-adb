@@ -239,11 +239,76 @@ static inline void adb_send_data_8(int pin, unsigned char *data)
   adb_send_stop_bit(pin);
 }
 
+static inline void adb_decode(int addr, int cmd, int reg, unsigned int value) {
+  if (reg == 3) {
+    if ((value & (1 << 14)) == 0) {
+      Serial.println("Exceptional event");
+    }
+    if (value & (1 << 13)) {
+      Serial.println("Service Request Enabled");
+    } 
+    Serial.print("Device address: ");
+    Serial.println((value >> 8) & 0x0f);
+    Serial.print("Device Handler ID: ");
+    Serial.println(value & 0xff, HEX);
+    return;
+  }
+  switch(addr) {
+  case 2: /* KEYBOARD */
+    if (reg == 0) {
+      Serial.print("Key ");
+      if (value & 0x8000) {
+        Serial.print("up ");
+      } 
+      else {
+        Serial.print("down ");
+      }
+      Serial.println((value >> 8) & 0x7f, HEX);
+      if (value & 0xff  != 0xff) {
+        Serial.print("Key ");
+        if (value & 0x80) {
+          Serial.print("up ");
+        } 
+        else {
+          Serial.print("down ");
+        }
+        Serial.println(value& 0x7f, HEX);
+      }
+    } else {
+      Serial.print("keyboard undecoded reg ");
+      Serial.println(reg);
+    }
+    break;
+  case 3: /* MOUSE */
+    if (reg == 0) {
+      Serial.print("MOUSE: button ");
+      if (value & 0x8000) {
+        Serial.print("up   X:");
+      } 
+      else {
+        Serial.print("down X:");
+      }
+      Serial.print(((char)(value >> 7)) >> 1);
+      Serial.print(" Y:");
+      Serial.println(((char)(value << 1)) >> 1);
+    } else {
+      Serial.print("mouse undecoded reg ");
+      Serial.println(reg);
+    }
+    break;
+  case 4: /* GRAPHIC TABLET */
+    Serial.print("graphic tablet undecoded reg ");
+    Serial.println(reg);
+    break;
+  }
+}
+
 void setup(void) {
   pinMode(ADB_pin, OUTPUT);
 
   Serial.begin(115200);
 }
+
 enum {
   IDLE,
   SYNC,
@@ -294,7 +359,6 @@ void loop(void) {
           /* reset */
           state = IDLE;
           prev_level = level;
-          Serial.println("RESET");
           continue;
         } 
         else if (dur > 700) {
@@ -392,30 +456,27 @@ void loop(void) {
           if (is_one(dur)) {
             state = IDLE;
           } 
-          else if (dur > 400) {
-            Serial.println("SR");
-            state = DATA;;
-          } else {
+          else {
             state = START;
           }
         }
-        break; 
+        break;
       case START:
         if (prev_level == 0) {
           if (is_one(dur)) {
             state = DATA;
           } 
           else {
-            Serial.print(addr);
-            Serial.print(" ");
-            Serial.print(cmd);
-            Serial.print(" ");
-            Serial.println(reg);
             state = IDLE;
           }
         } 
-        else if (dur > 260) { /* stop to start */
-          state = IDLE;
+        else {
+          if (dur > 260) {
+            state = IDLE;
+          } 
+          else {
+            /* stop to start */
+          }
         }
         break;
       case DATA:
@@ -425,6 +486,7 @@ void loop(void) {
           }
           bit++;
           if (bit == 16) {
+#if DEBUG
             Serial.print(addr);
             Serial.print(' ');
             Serial.print(cmd);
@@ -432,6 +494,9 @@ void loop(void) {
             Serial.print(reg);
             Serial.print(' ');
             Serial.println(value, HEX);
+#else
+            adb_decode(addr, cmd, reg, value);
+#endif
             state = IDLE;
           }
         }
@@ -441,5 +506,7 @@ void loop(void) {
     }
   }
 }
+
+
 
 
