@@ -2,511 +2,314 @@
  * info from Apple Macintosh Family Hardware Reference
  * ISBN 0-201-19255-1
  *
+ * Technical Note HW01: ADB - The Untold Story: Space Aliens Ate My Mouse
+ * http://hackipedia.org/Platform/Apple/Hardware/ADB/apple_adb_hw_01.html
+ *
+ * Synaptics TouchPad Interfacing Guide
+ * http://ccdw.org/~cjj/l/docs/ACF126.pdf
+ *
+ * Wacom Protocol from
+ * http://tabletmagic.cvs.sourceforge.net/viewvc/tabletmagic/wacom-adb/doc/analysis.txt?revision=1.1
  */
 
-#define ADB_pin                  2
+static const int ADB_pin_in = 2;
+static const int ADB_int = 0;
 
-#define ADB_KEYBOARD_ADDR        2
-#define ADB_MOUSE_ADDR           3
-#define ADB_GRAPHIC_TABLET_ADDR  4
+static unsigned char header;
+static int header_bit;
+static unsigned char data[8];
+static int data_bit, data_byte;
+unsigned int valid;
 
-/* All in microseconds */
-
-#define BITCELL_TIME             100
-#define LOW_TIME_0               60
-#define LOW_TIME_1               30
-#define LOW_TIME_ATTENTION       800
-#define LOW_TIME_STOP_BIT        65
-#define LOW_TIME_START_BIT       25
-#define LOW_TIME_SERVICE_REQUEST 300
-
-#define HIGH_TIME_SYNC           60
-#define HIGHT_STOP_TO_START      200
-
-/* in milliseconds */
-
-#define LOW_TIME_RESET_MS   3
-
-static inline void adb_send_reset(int pin) {
-  digitalWrite(pin, LOW);
-  delay(LOW_TIME_RESET_MS);
-  digitalWrite(pin, HIGH);
+static void print_bin(int val) {
+  for (int i = 0; i < 8; i++)
+  if (val & (0x80 >> i))
+  Serial.print('1');
+  else
+  Serial.print('0');
+  Serial.println("");
 }
 
-static inline void adb_send(int pin, int low_time) {
-  digitalWrite(pin, LOW);
-  delayMicroseconds(low_time);
-  digitalWrite(pin, HIGH);
+static void dump_hex(int length, unsigned char *value) {
+  for (int i = 0; i < length; i++) {
+    if (value[i] == 0) {
+      Serial.print("00");
+      continue;
+    }
+    if (value[i] < 0x10) {
+      Serial.print("0");
+    }
+    Serial.print(value[i], HEX);
+  }
+  Serial.println("");
 }
 
-static inline void adb_send_0(int pin) {
-  adb_send(pin, LOW_TIME_0);
-  delayMicroseconds(BITCELL_TIME - LOW_TIME_0);
-}
-
-static inline void adb_send_1(int pin) {
-  adb_send(pin, LOW_TIME_1);
-  delayMicroseconds(BITCELL_TIME - LOW_TIME_1);
-}
-
-static inline void adb_send_start_bit(int pin) {
-  adb_send(pin, LOW_TIME_START_BIT);
-  delayMicroseconds(BITCELL_TIME - LOW_TIME_START_BIT);
-
-}
-
-static inline void adb_send_stop_bit(int pin) {
-  adb_send(pin, LOW_TIME_STOP_BIT);
-  delayMicroseconds(BITCELL_TIME - LOW_TIME_STOP_BIT);
-}
-
-static inline void adb_send_bit(int pin, int bit)
-{
-  if (bit) {
-    adb_send_1(pin);
-  } 
-  else {
-    adb_send_0(pin);
+static void print_cmd(int cmd, int reg) {
+  switch(cmd) {
+  case 0:
+    if (reg == 0) {
+      Serial.print("SendReset");
+    } else if (reg == 1) {
+      Serial.print("Flush");
+    } else {
+      Serial.print("Reserved");
+    }
+    break;
+  case 2:
+    Serial.print("Listen");
+    break;
+  case 3:
+    Serial.print("Talk");
+    break;
+  default:
+    Serial.print("Reserved");
+    break;
   }
 }
 
-static inline void adb_send_attention(int pin) {
-  adb_send(pin, LOW_TIME_ATTENTION);
-  delayMicroseconds(HIGH_TIME_SYNC);
-}
-
-static inline void adb_send_address(int pin, int address) {
-  adb_send_bit(pin, address & 8);
-  adb_send_bit(pin, address & 4);
-  adb_send_bit(pin, address & 2);
-  adb_send_bit(pin, address & 1);
-}
-
-static inline void adb_send_register(int pin, int reg) {
-  adb_send_bit(pin, reg & 2);
-  adb_send_bit(pin, reg & 1);
-}
-
-static inline void adb_send_SendReset(int pin) {
-  adb_send_attention(pin);
-
-  adb_send_0(pin);
-  adb_send_0(pin);
-  adb_send_0(pin);
-  adb_send_0(pin);
-
-  adb_send_0(pin);
-  adb_send_0(pin);
-
-  adb_send_0(pin);
-  adb_send_0(pin);
-
-  adb_send_stop_bit(pin);
-}
-
-static inline void adb_send_Flush(int pin, int address) {
-  adb_send_attention(pin);
-
-  adb_send_address(pin, address);
-
-  adb_send_0(pin);
-  adb_send_0(pin);
-
-  adb_send_0(pin);
-  adb_send_1(pin);  
-
-  adb_send_stop_bit(pin);
-}
-
-static inline void adb_send_Listen(int pin, int address, int reg) {
-  adb_send_attention(pin);
-
-  adb_send_address(pin, address);
-
-  adb_send_0(pin);
-  adb_send_0(pin);
-
-  adb_send_register(pin, reg);
-
-  adb_send_stop_bit(pin);
-}
-
-static inline void adb_send_Talk(int pin, int address, int reg) {
-  adb_send_attention(pin);
-
-  adb_send_address(pin, address);
-
-  adb_send_0(pin);
-  adb_send_0(pin);
-
-  adb_send_register(pin, reg);
-
-  adb_send_stop_bit(pin);
-}
-
-static inline void adb_send_byte(int pin, unsigned char byte) {
-  adb_send_bit(pin, byte & 0x80);
-  adb_send_bit(pin, byte & 0x40);
-  adb_send_bit(pin, byte & 0x20);
-  adb_send_bit(pin, byte & 0x10);
-  adb_send_bit(pin, byte & 0x08);
-  adb_send_bit(pin, byte & 0x04);
-  adb_send_bit(pin, byte & 0x02);
-  adb_send_bit(pin, byte & 0x01);
-}
-
-static inline void adb_send_data_1(int pin, unsigned char *data)
-{
-  adb_send_start_bit(pin);
-  adb_send_byte(pin, data[0]);
-  adb_send_stop_bit(pin);
-}
-
-static inline void adb_send_data_2(int pin, unsigned char *data)
-{
-  adb_send_start_bit(pin);
-  adb_send_byte(pin, data[0]);
-  adb_send_byte(pin, data[1]);
-  adb_send_stop_bit(pin);
-}
-
-static inline void adb_send_data_3(int pin, unsigned char *data)
-{
-  adb_send_start_bit(pin);
-  adb_send_byte(pin, data[0]);
-  adb_send_byte(pin, data[1]);
-  adb_send_byte(pin, data[2]);
-  adb_send_stop_bit(pin);
-}
-
-static inline void adb_send_data_4(int pin, unsigned char *data)
-{
-  adb_send_start_bit(pin);
-  adb_send_byte(pin, data[0]);
-  adb_send_byte(pin, data[1]);
-  adb_send_byte(pin, data[2]);
-  adb_send_byte(pin, data[3]);
-  adb_send_stop_bit(pin);
-}
-
-static inline void adb_send_data_5(int pin, unsigned char *data)
-{
-  adb_send_start_bit(pin);
-  adb_send_byte(pin, data[0]);
-  adb_send_byte(pin, data[1]);
-  adb_send_byte(pin, data[2]);
-  adb_send_byte(pin, data[3]);
-  adb_send_byte(pin, data[4]);
-  adb_send_stop_bit(pin);
-}
-
-static inline void adb_send_data_6(int pin, unsigned char *data)
-{
-  adb_send_start_bit(pin);
-  adb_send_byte(pin, data[0]);
-  adb_send_byte(pin, data[1]);
-  adb_send_byte(pin, data[2]);
-  adb_send_byte(pin, data[3]);
-  adb_send_byte(pin, data[4]);
-  adb_send_byte(pin, data[5]);
-  adb_send_stop_bit(pin);
-}
-
-static inline void adb_send_data_7(int pin, unsigned char *data)
-{
-  adb_send_start_bit(pin);
-  adb_send_byte(pin, data[0]);
-  adb_send_byte(pin, data[1]);
-  adb_send_byte(pin, data[2]);
-  adb_send_byte(pin, data[3]);
-  adb_send_byte(pin, data[4]);
-  adb_send_byte(pin, data[5]);
-  adb_send_byte(pin, data[6]);
-  adb_send_stop_bit(pin);
-}
-
-static inline void adb_send_data_8(int pin, unsigned char *data)
-{
-  adb_send_start_bit(pin);
-  adb_send_byte(pin, data[0]);
-  adb_send_byte(pin, data[1]);
-  adb_send_byte(pin, data[2]);
-  adb_send_byte(pin, data[3]);
-  adb_send_byte(pin, data[4]);
-  adb_send_byte(pin, data[5]);
-  adb_send_byte(pin, data[6]);
-  adb_send_byte(pin, data[7]);
-  adb_send_stop_bit(pin);
-}
-
-static inline void adb_decode(int addr, int cmd, int reg, unsigned int value) {
+static inline void adb_decode(unsigned char header, int length,
+                              unsigned char *data) {
+  int addr = (header >> 4) & 0x0f;
+  int cmd = (header >> 2) & 0x03;
+  int reg = header & 0x03;
+  
   if (reg == 3) {
-    if ((value & (1 << 14)) == 0) {
-      Serial.println("Exceptional event");
+    Serial.print(addr);
+    Serial.print(' ');
+    print_cmd(cmd, reg);
+    Serial.print(' ');
+    if ((data[0] & (1 << 7)) == 0) {
+      Serial.print('E');
+    } else {
+      Serial.print(' ');
     }
-    if (value & (1 << 13)) {
-      Serial.println("Service Request Enabled");
-    } 
-    Serial.print("Device address: ");
-    Serial.println((value >> 8) & 0x0f);
-    Serial.print("Device Handler ID: ");
-    Serial.println(value & 0xff, HEX);
+    if (data[0] & (1 << 6)) {
+      Serial.print('S');
+    } else {
+      Serial.print(' ');
+    }
+    Serial.print(' ');
+    Serial.print(data[0] & 0x0f);
+    Serial.print(' ');
+    Serial.println(data[1], HEX);
     return;
   }
   switch(addr) {
   case 2: /* KEYBOARD */
     if (reg == 0) {
       Serial.print("Key ");
-      if (value & 0x8000) {
+      if (data[0] & 0x80) {
         Serial.print("up ");
-      } 
+      }
       else {
         Serial.print("down ");
       }
-      Serial.println((value >> 8) & 0x7f, HEX);
-      if (value & 0xff  != 0xff) {
+      Serial.println(data[0] & 0x7f, HEX);
+      if (data[1]  != 0xff) {
         Serial.print("Key ");
-        if (value & 0x80) {
+        if (data[1] & 0x80) {
           Serial.print("up ");
-        } 
+        }
         else {
           Serial.print("down ");
         }
-        Serial.println(value& 0x7f, HEX);
+        Serial.println(data[1] & 0x7f, HEX);
       }
     } else {
       Serial.print("keyboard undecoded reg ");
       Serial.println(reg);
+      dump_hex(length, data);
     }
     break;
   case 3: /* MOUSE */
     if (reg == 0) {
       Serial.print("MOUSE: button ");
-      if (value & 0x8000) {
+      if (data[0] & 0x80) {
         Serial.print("up   X:");
-      } 
+      }
       else {
         Serial.print("down X:");
       }
-      Serial.print(((char)(value >> 7)) >> 1);
+      Serial.print((char)(data[0] << 1) >> 1);
       Serial.print(" Y:");
-      Serial.println(((char)(value << 1)) >> 1);
+      Serial.println((char)(data[1] << 1) >> 1);
+    } else if (reg == 1) {
+      Serial.print("Mouse type: ");
+      Serial.write(data[0]);
+      Serial.write(data[1]);
+      Serial.write(data[2]);
+      Serial.write(data[3]);
+      Serial.println("");
+      Serial.print("Resolution: ");
+      Serial.print((data[4] << 8) + data[5]);
+      Serial.println(" dpi");
+      Serial.print("class: ");
+      Serial.println(data[6]);
+      Serial.print("Buttons: ");
+      Serial.println(data[7]);
     } else {
       Serial.print("mouse undecoded reg ");
       Serial.println(reg);
+      dump_hex(length, data);
     }
     break;
   case 4: /* GRAPHIC TABLET */
-    Serial.print("graphic tablet undecoded reg ");
-    Serial.println(reg);
+    if (reg == 0) {
+      if (length == 8)
+      print_bin(data[7]);
+     //dump_hex(length, data);
+    } else {
+      Serial.print("graphic tablet undecoded reg ");
+      Serial.println(reg);
+      dump_hex(length, data);
+    }
     break;
   }
 }
 
-void setup(void) {
-  pinMode(ADB_pin, OUTPUT);
-
-  Serial.begin(115200);
-}
-
-enum {
-  IDLE,
-  SYNC,
-  ADDR1,
-  ADDR2,
-  ADDR3,
-  ADDR4,
-  CMD1,
-  CMD2,
-  REG1,
-  REG2,
-  STOP,
-  START,
-  DATA,
-} 
-state = IDLE;
-
-static inline int is_one(int dur)
+static inline int is_one(int duration)
 {
-  if (dur < 50) {
+  if (duration < 45) {
     return 1;
   }
   return 0;
 }
 
-void loop(void) {
-  int addr, cmd, reg;
-  unsigned int bit, value;
-  int prev_level = -1;
-  unsigned long prevm = 0;
-  int dur;
-#if 0
-  pinMode(ADB_pin, OUTPUT);
-  adb_send_reset(ADB_pin);
-  adb_send_Talk(ADB_pin, ADB_KEYBOARD_ADDR, 3);
-#endif
-  pinMode(ADB_pin, INPUT);
-  //digitalWrite(ADB_pin, HIGH);
-  //  delayMicroseconds(140);
-  while(1) {
-    int level = digitalRead(ADB_pin);
-    if (prev_level != level) {
-      unsigned  long m = micros();
-      dur = m - prevm;
-      prevm = m;
-      if (prev_level == 0) {
-        if (dur > 3000) {
-          /* reset */
+static void ADB_edge(void) {
+  static unsigned long m;
+  static unsigned long prevm = 0;
+  static int duration;
+  int level;
+  static enum {
+    IDLE,
+    SYNC,
+    HEADER,
+    DATA,
+    START,
+  } state = IDLE;
+  
+  m = micros();
+  level = digitalRead(ADB_pin_in);
+  
+  /* compute previous level duration */
+  
+  duration = m - prevm;
+  prevm = m;
+  
+  if (level) {
+    
+    /* check RESET */
+    
+    if (duration >= 3000) {
+      /* reset */
+      state = IDLE;
+      return;
+    }
+    
+    /* check ATTENTION */
+    
+    if (duration > 700) {
+      /* attention */
+      state = SYNC;
+      header = 0;
+      header_bit = 0;
+      return;
+    }
+    
+    /* state machine */
+    
+    switch(state) {
+    case DATA:
+      if (is_one(duration)) {
+        data[data_byte] |= 0x80 >> data_bit;
+      }
+      data_bit++;
+      if (data_bit == 8) {
+        if (data_byte == 7) {
+          valid = 1;
           state = IDLE;
-          prev_level = level;
-          continue;
-        } 
-        else if (dur > 700) {
-          /* Attention */
-          state = SYNC;
-          prev_level = level;
-          addr = 0;
-          reg = 0;
-          cmd = 0;
-          bit = 0;
-          value = 0;
-          continue;
+          return;
         }
+        data_bit = 0;
+        data_byte++;
+        data[data_byte] = 0;
       }
-      switch(state) {
-      case IDLE:
-        break;
-      case SYNC:
-        if (prev_level == 1) {
-          /* sync high level */
-          if (dur > 60 && dur < 75) {
-            state = ADDR1;
-          } 
-          else {
-            state = IDLE;
-          }
-        }
-        break;
-      case ADDR1:
-        if (prev_level == 0) {
-          if (is_one(dur)) {
-            addr = 8;
-          }
-          state = ADDR2;
-        }
-        break;
-      case ADDR2:
-        if (prev_level == 0) {
-          if (is_one(dur)) {
-            addr |= 4;
-          }
-          state = ADDR3;
-        }
-        break;
-      case ADDR3:
-        if (prev_level == 0) {
-          if (is_one(dur)) {
-            addr |= 2;
-          }
-          state = ADDR4;
-        }
-        break;
-      case ADDR4:
-        if (prev_level == 0) {
-          if (is_one(dur)) {
-            addr |= 1;
-          }
-          state = CMD1;
-        }
-        break;
-      case CMD1:
-        if (prev_level == 0) {
-          if (is_one(dur)) {
-            cmd = 2;
-          }
-          state = CMD2;
-        }
-        break;
-      case CMD2:
-        if (prev_level == 0) {
-          if (is_one(dur)) {
-            cmd |= 1;
-          } 
-          state = REG1;
-        }
-        break;
-      case REG1:
-        if (prev_level == 0) {
-          if (is_one(dur)) {
-            reg = 2;
-          }
-          state = REG2;
-        }
-        break;
-      case REG2:
-        if (prev_level == 0) {
-          if (is_one(dur)) {
-            reg |= 1;
-          } 
-          state = STOP;
-        }
-        break;
-      case STOP:
-        if (prev_level == 0) {
-          if (is_one(dur)) {
-            state = IDLE;
-          } 
-          else {
-            state = START;
-          }
-        }
-        break;
-      case START:
-        if (prev_level == 0) {
-          if (is_one(dur)) {
-            state = DATA;
-          } 
-          else {
-            state = IDLE;
-          }
-        } 
-        else {
-          if (dur > 260) {
-            state = IDLE;
-          } 
-          else {
-            /* stop to start */
-          }
-        }
-        break;
-      case DATA:
-        if (prev_level == 0) {
-          if (is_one(dur)) {
-            value |= 0x8000 >> bit;
-          }
-          bit++;
-          if (bit == 16) {
-#if DEBUG
-            Serial.print(addr);
-            Serial.print(' ');
-            Serial.print(cmd);
-            Serial.print(' ');
-            Serial.print(reg);
-            Serial.print(' ');
-            Serial.println(value, HEX);
-#else
-            adb_decode(addr, cmd, reg, value);
-#endif
-            state = IDLE;
-          }
-        }
-        break;
+      break;
+    case HEADER:
+      if (is_one(duration)) {
+        header |= 0x80 >> header_bit; 
       }
-      prev_level = level;
+      header_bit++;
+      if (header_bit == 9) {
+        /* stop bit is ignored */
+        state = START;
+        data_bit = 0;
+        data_byte = 0;
+        data[0] = 0;
+        return;
+      }
+      break;
+    case START:
+      if (is_one(duration)) {
+        state = DATA;
+      } else {
+        state = IDLE;
+      }
+      break;
+    }
+  } else {
+    switch(state) {
+    case SYNC:
+      if (duration > 60 && duration < 75) {
+        state = HEADER;
+      } else {
+        state = IDLE;
+      }
+      break;
+    case DATA:
+      if (duration > 300) {
+        if (data_byte > 0) {
+          valid = 1;
+        }
+        state = IDLE;
+      }
+      break;
+    case START:
+      if (duration > 260) {
+        state = IDLE;
+      } else {
+       /* stop to start */
+      } 
     }
   }
 }
+  
+void setup(void) {
+  pinMode(ADB_pin_in, INPUT);
+  digitalWrite(ADB_pin_in, HIGH); /* pull-up active */
+  attachInterrupt(ADB_int, ADB_edge, CHANGE);
+  Serial.begin(115200);
+  valid = 0;
+}
 
-
-
-
+void loop(void) {
+  int valid_header;
+  int valid_len;
+  unsigned char valid_data[8];
+  int have_data = 0;
+  noInterrupts();  
+  if (valid) {
+    valid_header = header;
+    valid_len = data_byte;
+    for (int i = 0; i < data_byte; i++) {
+      valid_data[i] = data[i];
+    }
+    valid = 0;
+    have_data = 1;
+  }
+  interrupts();
+  if (have_data) {
+    adb_decode(valid_header, valid_len, valid_data);
+  }
+}
+  
