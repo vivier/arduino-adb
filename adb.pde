@@ -8,40 +8,67 @@
  * Synaptics TouchPad Interfacing Guide
  * http://ccdw.org/~cjj/l/docs/ACF126.pdf
  *
- * Wacom Protocol from
- * http://tabletmagic.cvs.sourceforge.net/viewvc/tabletmagic/wacom-adb/doc/analysis.txt?revision=1.1
+ * Wacom Protocol for intuios GD-405M from
+ * http://sourceforge.net/apps/mediawiki/linuxwacom/index.php?title=Serial_Protocol_IV
  */
+
+#include "adb.h"
 
 static const int ADB_pin_in = 2;
 static const int ADB_int = 0;
 
-static unsigned char header;
-static int header_bit;
-static unsigned char data[8];
-static int data_bit, data_byte;
-unsigned int valid;
+static ADB_packet_t ADB_packet[2];
+static int current_packet = 0;
 
-static void print_bin(int val) {
-  for (int i = 0; i < 8; i++)
-  if (val & (0x80 >> i))
-  Serial.print('1');
-  else
-  Serial.print('0');
-  Serial.println("");
+static inline int ADB_client_get(void) {
+  return current_packet;
+}
+
+static inline int ADB_provider_get(void) {
+  return (current_packet + 1) & 1;
+}
+
+static inline void ADB_provider_commit(void) {
+  current_packet = (current_packet + 1) & 1;
+}
+
+static void print_bin(int length, unsigned char *value) {
+  for (int i = 0; i < length; i++) {
+    if (value[i >> 3] & (0x80 >> i)) {
+      Serial.print('1');
+    } else {
+      Serial.print('0');
+    }
+  }
+}
+
+static inline void set_bit(int n, unsigned char *value) {
+  value[n >> 3] |= 0x80 >> (n & 7);
+}
+
+static inline void clear_bit(int n, unsigned char *value) {
+  value[n >> 3] &= ~(0x80 >> (n & 7));
 }
 
 static void dump_hex(int length, unsigned char *value) {
   for (int i = 0; i < length; i++) {
     if (value[i] == 0) {
       Serial.print("00");
-      continue;
+    } else {
+      if (value[i] < 0x10) {
+        Serial.print("0");
+      }
+      Serial.print(value[i], HEX);
     }
-    if (value[i] < 0x10) {
-      Serial.print("0");
-    }
-    Serial.print(value[i], HEX);
   }
-  Serial.println("");
+  Serial.write(0x0a);
+}
+
+
+static void dump_wacom(int length, unsigned char *value) {
+  for (int i = 0; i < length; i++) {
+      Serial.write(value[i]);
+  }
 }
 
 static void print_cmd(int cmd, int reg) {
@@ -67,101 +94,98 @@ static void print_cmd(int cmd, int reg) {
   }
 }
 
-static inline void adb_decode(unsigned char header, int length,
-                              unsigned char *data) {
-  int addr = (header >> 4) & 0x0f;
-  int cmd = (header >> 2) & 0x03;
-  int reg = header & 0x03;
+static inline void adb_decode(ADB_packet_t *p) {
+  int addr = (p->header >> 4) & 0x0f;
+  int cmd = (p->header >> 2) & 0x03;
+  int reg = p->header & 0x03;
   
   if (reg == 3) {
     Serial.print(addr);
     Serial.print(' ');
     print_cmd(cmd, reg);
     Serial.print(' ');
-    if ((data[0] & (1 << 7)) == 0) {
+    if ((p->data[0] & (1 << 7)) == 0) {
       Serial.print('E');
     } else {
       Serial.print(' ');
     }
-    if (data[0] & (1 << 6)) {
+    if (p->data[0] & (1 << 6)) {
       Serial.print('S');
     } else {
       Serial.print(' ');
     }
     Serial.print(' ');
-    Serial.print(data[0] & 0x0f);
+    Serial.print(p->data[0] & 0x0f);
     Serial.print(' ');
-    Serial.println(data[1], HEX);
+    Serial.println(p->data[1], HEX);
     return;
   }
   switch(addr) {
   case 2: /* KEYBOARD */
     if (reg == 0) {
       Serial.print("Key ");
-      if (data[0] & 0x80) {
+      if (p->data[0] & 0x80) {
         Serial.print("up ");
       }
       else {
         Serial.print("down ");
       }
-      Serial.println(data[0] & 0x7f, HEX);
-      if (data[1]  != 0xff) {
+      Serial.println(p->data[0] & 0x7f, HEX);
+      if (p->data[1]  != 0xff) {
         Serial.print("Key ");
-        if (data[1] & 0x80) {
+        if (p->data[1] & 0x80) {
           Serial.print("up ");
         }
         else {
           Serial.print("down ");
         }
-        Serial.println(data[1] & 0x7f, HEX);
+        Serial.println(p->data[1] & 0x7f, HEX);
       }
     } else {
       Serial.print("keyboard undecoded reg ");
       Serial.println(reg);
-      dump_hex(length, data);
+      dump_hex(p->bit >> 3, p->data);
     }
     break;
   case 3: /* MOUSE */
     if (reg == 0) {
       Serial.print("MOUSE: button ");
-      if (data[0] & 0x80) {
+      if (p->data[0] & 0x80) {
         Serial.print("up   X:");
       }
       else {
         Serial.print("down X:");
       }
-      Serial.print((char)(data[0] << 1) >> 1);
+      Serial.print((char)(p->data[0] << 1) >> 1);
       Serial.print(" Y:");
-      Serial.println((char)(data[1] << 1) >> 1);
+      Serial.println((char)(p->data[1] << 1) >> 1);
     } else if (reg == 1) {
       Serial.print("Mouse type: ");
-      Serial.write(data[0]);
-      Serial.write(data[1]);
-      Serial.write(data[2]);
-      Serial.write(data[3]);
+      Serial.write(p->data[0]);
+      Serial.write(p->data[1]);
+      Serial.write(p->data[2]);
+      Serial.write(p->data[3]);
       Serial.println("");
       Serial.print("Resolution: ");
-      Serial.print((data[4] << 8) + data[5]);
+      Serial.print((p->data[4] << 8) + p->data[5]);
       Serial.println(" dpi");
       Serial.print("class: ");
-      Serial.println(data[6]);
+      Serial.println((int)p->data[6]);
       Serial.print("Buttons: ");
-      Serial.println(data[7]);
+      Serial.println((int)p->data[7]);
     } else {
       Serial.print("mouse undecoded reg ");
       Serial.println(reg);
-      dump_hex(length, data);
+      dump_hex(p->bit >> 3, p->data);
     }
     break;
   case 4: /* GRAPHIC TABLET */
     if (reg == 0) {
-      if (length == 8)
-      print_bin(data[7]);
-     //dump_hex(length, data);
+     dump_wacom(p->bit >> 3, p->data);
     } else {
       Serial.print("graphic tablet undecoded reg ");
       Serial.println(reg);
-      dump_hex(length, data);
+      dump_hex(p->bit >> 3, p->data);
     }
     break;
   }
@@ -187,6 +211,12 @@ static void ADB_edge(void) {
     DATA,
     START,
   } state = IDLE;
+  ADB_packet_t *p = &ADB_packet[ADB_provider_get()];
+  
+  if (p->valid) {
+    Serial.println("OVERFLOW");
+    return;
+  }
   
   m = micros();
   level = digitalRead(ADB_pin_in);
@@ -211,8 +241,7 @@ static void ADB_edge(void) {
     if (duration > 700) {
       /* attention */
       state = SYNC;
-      header = 0;
-      header_bit = 0;
+      p->bit = 0;
       return;
     }
     
@@ -221,31 +250,29 @@ static void ADB_edge(void) {
     switch(state) {
     case DATA:
       if (is_one(duration)) {
-        data[data_byte] |= 0x80 >> data_bit;
+        set_bit(p->bit, p->data);
+      } else {
+        clear_bit(p->bit, p->data);
       }
-      data_bit++;
-      if (data_bit == 8) {
-        if (data_byte == 7) {
-          valid = 1;
-          state = IDLE;
-          return;
-        }
-        data_bit = 0;
-        data_byte++;
-        data[data_byte] = 0;
+      p->bit++;
+      if (p->bit == 64) {
+        p->valid = 1;
+        ADB_provider_commit();
+        state = IDLE;
+        return;
       }
       break;
     case HEADER:
       if (is_one(duration)) {
-        header |= 0x80 >> header_bit; 
+        set_bit(p->bit, &p->header);
+      } else {
+        clear_bit(p->bit, &p->header);
       }
-      header_bit++;
-      if (header_bit == 9) {
+      p->bit++;
+      if (p->bit == 9) {
         /* stop bit is ignored */
         state = START;
-        data_bit = 0;
-        data_byte = 0;
-        data[0] = 0;
+        p->bit = 0;
         return;
       }
       break;
@@ -268,8 +295,9 @@ static void ADB_edge(void) {
       break;
     case DATA:
       if (duration > 300) {
-        if (data_byte > 0) {
-          valid = 1;
+        if (p->bit > 0) {
+          p->valid = 1;
+          ADB_provider_commit();
         }
         state = IDLE;
       }
@@ -289,27 +317,15 @@ void setup(void) {
   digitalWrite(ADB_pin_in, HIGH); /* pull-up active */
   attachInterrupt(ADB_int, ADB_edge, CHANGE);
   Serial.begin(115200);
-  valid = 0;
+  ADB_packet[0].valid = 0;
+  ADB_packet[1].valid = 0;
 }
 
 void loop(void) {
-  int valid_header;
-  int valid_len;
-  unsigned char valid_data[8];
-  int have_data = 0;
-  noInterrupts();  
-  if (valid) {
-    valid_header = header;
-    valid_len = data_byte;
-    for (int i = 0; i < data_byte; i++) {
-      valid_data[i] = data[i];
-    }
-    valid = 0;
-    have_data = 1;
-  }
-  interrupts();
-  if (have_data) {
-    adb_decode(valid_header, valid_len, valid_data);
+  int current;
+  current = ADB_client_get();
+  if (ADB_packet[current].valid) {
+    adb_decode(&ADB_packet[current_packet]);
+    ADB_packet[current].valid = 0;
   }
 }
-  
